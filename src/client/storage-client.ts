@@ -71,31 +71,47 @@ export class StorageClient {
   /**
    * Download a file
    */
-  async downloadFile(fileId: string): Promise<{
-    buffer: Buffer
-    metadata: FileMetadata
-    status: number
-  }> {
+  async downloadFile(fileId: string): Promise<ApiResponse<Buffer>> {
     const url = `${this.client.getBaseUrl()}${API_ENDPOINTS.STORAGE_FILE(fileId)}`
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${this.token}`,
-      },
-    })
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+        },
+      })
 
-    const buffer = Buffer.from(await response.arrayBuffer())
-    const contentType = response.headers.get('content-type') || 'application/octet-stream'
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ code: 'DOWNLOAD_ERROR', message: 'Download failed' }))
+        return {
+          success: false,
+          error: {
+            code: error.code || 'DOWNLOAD_ERROR',
+            message: error.message || response.statusText,
+            timestamp: new Date().toISOString(),
+          },
+        }
+      }
 
-    // Try to get metadata from response headers or make separate call
-    const metadataResponse = await this.getFileMetadata(fileId)
-    const metadata = metadataResponse.data!
+      const buffer = Buffer.from(await response.arrayBuffer())
 
-    return {
-      buffer,
-      metadata,
-      status: response.status,
+      return {
+        success: true,
+        data: buffer,
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        return {
+          success: false,
+          error: {
+            code: 'DOWNLOAD_ERROR',
+            message: error.message,
+            timestamp: new Date().toISOString(),
+          },
+        }
+      }
+      throw error
     }
   }
 
@@ -106,37 +122,50 @@ export class StorageClient {
     fileId: string,
     start: number,
     end?: number
-  ): Promise<{
-    buffer: Buffer
-    status: number
-    range: { start: number; end: number; total: number }
-  }> {
+  ): Promise<ApiResponse<Buffer>> {
     const url = `${this.client.getBaseUrl()}${API_ENDPOINTS.STORAGE_FILE(fileId)}`
 
     const rangeHeader = end !== undefined ? `bytes=${start}-${end}` : `bytes=${start}-`
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${this.token}`,
-        'Range': rangeHeader,
-      },
-    })
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+          'Range': rangeHeader,
+        },
+      })
 
-    const buffer = Buffer.from(await response.arrayBuffer())
+      if (!response.ok && response.status !== 206) {
+        const error = await response.json().catch(() => ({ code: 'DOWNLOAD_ERROR', message: 'Range download failed' }))
+        return {
+          success: false,
+          error: {
+            code: error.code || 'DOWNLOAD_ERROR',
+            message: error.message || response.statusText,
+            timestamp: new Date().toISOString(),
+          },
+        }
+      }
 
-    // Parse Content-Range header (e.g., "bytes 0-1023/2048")
-    const contentRange = response.headers.get('content-range') || ''
-    const match = contentRange.match(/bytes (\d+)-(\d+)\/(\d+)/)
+      const buffer = Buffer.from(await response.arrayBuffer())
 
-    const range = match
-      ? { start: parseInt(match[1]), end: parseInt(match[2]), total: parseInt(match[3]) }
-      : { start, end: end || 0, total: buffer.length }
-
-    return {
-      buffer,
-      status: response.status,
-      range,
+      return {
+        success: true,
+        data: buffer,
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        return {
+          success: false,
+          error: {
+            code: 'DOWNLOAD_ERROR',
+            message: error.message,
+            timestamp: new Date().toISOString(),
+          },
+        }
+      }
+      throw error
     }
   }
 
@@ -155,17 +184,39 @@ export class StorageClient {
    * List files
    */
   async listFiles(
-    limit?: number,
-    offset?: number
-  ): Promise<ApiResponse<ListFilesResponse>> {
+    options?: {
+      limit?: number
+      offset?: number
+      contentType?: string
+      sort?: string
+      order?: 'asc' | 'desc'
+    }
+  ): Promise<ApiResponse<FileMetadata[]>> {
     const query: Record<string, any> = {}
-    if (limit !== undefined) query.limit = limit
-    if (offset !== undefined) query.offset = offset
+    if (options?.limit !== undefined) query.limit = options.limit
+    if (options?.offset !== undefined) query.offset = options.offset
+    if (options?.contentType) query.contentType = options.contentType
+    if (options?.sort) query.sort = options.sort
+    if (options?.order) query.order = options.order
 
-    return this.client.authenticatedRequest<ListFilesResponse>(
+    return this.client.authenticatedRequest<FileMetadata[]>(
       API_ENDPOINTS.STORAGE_FILES,
       this.token,
       { method: 'GET', query }
+    )
+  }
+
+  /**
+   * Update file metadata
+   */
+  async updateFileMetadata(
+    fileId: string,
+    updates: { filename?: string; contentType?: string }
+  ): Promise<ApiResponse<FileMetadata>> {
+    return this.client.authenticatedRequest<FileMetadata>(
+      API_ENDPOINTS.STORAGE_FILE_METADATA(fileId),
+      this.token,
+      { method: 'PATCH', body: updates }
     )
   }
 
